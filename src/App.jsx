@@ -56,6 +56,38 @@ function App() {
     }
   }, [authenticated]);
 
+  // Sync Tray Menu
+  useEffect(() => {
+    if (window.electronAPI?.updateTray) {
+      window.electronAPI.updateTray({ projects, activeTunnels });
+    }
+  }, [projects, activeTunnels]);
+
+  // Handle Tray Actions
+  useEffect(() => {
+    if (!window.electronAPI?.onTrayAction) return;
+
+    const cleanup = window.electronAPI.onTrayAction((action) => {
+      console.log('Tray Action:', action);
+      if (action.type === 'start') {
+        const proj = projects.find(p => p.id === action.projectId);
+        if (proj) {
+          // Check auth before starting from tray
+          if (authenticated) {
+            handleStartTunnel(proj);
+          } else {
+            // Maybe bring window to front if auth needed?
+            alert('Please login in the app first');
+          }
+        }
+      } else if (action.type === 'stop') {
+        handleStopTunnel(action.projectId);
+      }
+    });
+
+    return cleanup;
+  }, [projects, authenticated]); // Re-bind when projects/auth changes to avoid stale closures
+
   useEffect(() => {
     const interval = setInterval(checkAllPorts, 5000);
     return () => clearInterval(interval);
@@ -209,8 +241,8 @@ function App() {
               onClick={handleLogin}
               title={authenticated ? "Logged in to Cloudflare" : "Login to Cloudflare"}
               className={`p-2.5 rounded-full transition-all border ${authenticated
-                  ? 'bg-blue-500/10 border-blue-500/50 text-blue-400'
-                  : 'bg-zinc-800 border-white/5 text-zinc-600 hover:text-white'
+                ? 'bg-blue-500/10 border-blue-500/50 text-blue-400'
+                : 'bg-zinc-800 border-white/5 text-zinc-600 hover:text-white'
                 }`}
             >
               <Fingerprint size={20} />

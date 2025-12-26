@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const { exec } = require('child_process');
 const fs = require('fs');
@@ -38,18 +38,14 @@ function createWindow() {
 }
 
 function createTray() {
-    // In a real app we'd need a real icon. 
-    // For now we assume one exists or it'll fail gracefully (system default or empty).
-    // Note: Creating a simple image on the fly is hard in node without canvas/sharp.
-    // We'll try to load one if it exists, else just text? No, tray needs image.
-    // Let's assume the user can drop an icon later.
-    const iconPath = path.join(__dirname, 'assets/iconTemplate.png');
-
-    // Fallback: If no icon, maybe don't create tray or it will show empty space?
-    // Let's create tray anyway.
-
     try {
-        tray = new Tray(iconPath);
+        // Standard 22x22 size for macOS menubar. Simple white circle.
+        const icon = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABYAAAAWBAMAAAA2mn1CAAAAGFBMVEUAAAD///////////////////////////////////9/PZ4+AAAABHRSTlM7MzMz7Vt9aAAAADxJREFUGJVjYKAO4GIAAjQBTgYGEGCAi8AAMgxIInADM4gJcDOwMzCAmMA8YyA2kGcExEaH1P8gZ6ACBgUA1WwIP9n+K8IAAAAASUVORK5CYII=');
+        icon.setTemplateImage(true);
+
+        tray = new Tray(icon);
+        tray.setTitle(' PM '); // Force text visibility for debugging
+
         const contextMenu = Menu.buildFromTemplate([
             { label: 'Show App', click: () => mainWindow.show() },
             { type: 'separator' },
@@ -63,16 +59,8 @@ function createTray() {
         tray.setToolTip('Port Manager');
         tray.setContextMenu(contextMenu);
 
-        // Click tray to toggle
-        tray.on('click', () => {
-            if (mainWindow.isVisible()) {
-                mainWindow.hide();
-            } else {
-                mainWindow.show();
-            }
-        });
     } catch (e) {
-        console.log('Tray creation failed (likely no icon):', e);
+        console.log('Tray creation failed:', e);
     }
 }
 
@@ -96,6 +84,58 @@ app.on('window-all-closed', () => {
 });
 
 // IPC Handlers
+
+// Helper to build tray menu
+const buildTrayMenu = (projects = [], activeTunnels = {}) => {
+    if (!tray) return;
+
+    const projectItems = projects.map(p => {
+        const isActive = activeTunnels[p.id];
+        return {
+            label: `${p.name} (${p.port})`,
+            icon: isActive ? nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==') : undefined, // Green dot if possible, else just text
+            submenu: [
+                {
+                    label: isActive ? 'Stop Tunnel' : 'Start Tunnel',
+                    click: () => {
+                        if (mainWindow && !mainWindow.isDestroyed()) {
+                            mainWindow.webContents.send('tray-action', {
+                                type: isActive ? 'stop' : 'start',
+                                projectId: p.id
+                            });
+                        }
+                    }
+                },
+                {
+                    label: 'Copy URL',
+                    enabled: !!p.domain,
+                    click: () => {
+                        if (p.domain) {
+                            const { clipboard } = require('electron');
+                            clipboard.writeText(`https://${p.domain}`);
+                        }
+                    }
+                }
+            ]
+        };
+    });
+
+    const template = [
+        { label: 'Port Manager Active', enabled: false },
+        { type: 'separator' },
+        ...projectItems,
+        { type: 'separator' },
+        { label: 'Dashboard', click: () => mainWindow.show() },
+        { label: 'Quit', click: () => { app.isQuiting = true; app.quit(); } }
+    ];
+
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+};
+
+ipcMain.handle('update-tray', (event, data) => {
+    buildTrayMenu(data.projects, data.activeTunnels);
+    return true;
+});
 
 // Check port usage using lsof
 ipcMain.handle('check-port', async (event, port) => {
