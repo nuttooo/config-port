@@ -1,103 +1,114 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, RefreshCw, Command } from 'lucide-react';
-import PortCard from './components/PortCard';
-import AddPortModal from './components/AddPortModal';
+import { Plus, Fingerprint, RefreshCw } from 'lucide-react';
+import ProjectCard from './components/ProjectCard';
+import AddProjectModal from './components/AddProjectModal';
 
 function App() {
-  const [monitoredPorts, setMonitoredPorts] = useState(() => {
-    const saved = localStorage.getItem('monitoredPorts');
-    return saved ? JSON.parse(saved) : [3000, 5173, 8080];
+  const [projects, setProjects] = useState(() => {
+    const saved = localStorage.getItem('pm_projects');
+    return saved ? JSON.parse(saved) : [
+      { id: 'default-1', name: 'React App', port: 5173, domain: null },
+      { id: 'default-2', name: 'API Server', port: 8080, domain: null }
+    ];
   });
 
   const [portStatus, setPortStatus] = useState({});
-  const [tunnels, setTunnels] = useState({});
+  const [activeTunnels, setActiveTunnels] = useState({}); // { projectId: true }
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem('monitoredPorts', JSON.stringify(monitoredPorts));
+    localStorage.setItem('pm_projects', JSON.stringify(projects));
     checkAllPorts();
-  }, [monitoredPorts]);
 
-  // Periodic polling
+    // Check auth on load
+    if (window.electronAPI) {
+      window.electronAPI.cfCheckAuth().then(setAuthenticated);
+    }
+  }, [projects]);
+
   useEffect(() => {
     const interval = setInterval(checkAllPorts, 5000);
     return () => clearInterval(interval);
-  }, [monitoredPorts]);
-
-  // Keyboard shortcut for Add
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        setIsModalOpen(true);
-      }
-      if (e.key === 'Escape') setIsModalOpen(false);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [projects]);
 
   const checkAllPorts = async () => {
     if (!window.electronAPI) return;
-    setRefreshing(true);
 
     const newStatus = {};
-    for (const port of monitoredPorts) {
-      const pid = await window.electronAPI.checkPort(port);
-      newStatus[port] = pid
+    for (const proj of projects) {
+      const pid = await window.electronAPI.checkPort(proj.port);
+      newStatus[proj.port] = pid
         ? { status: 'active', pid }
         : { status: 'free', pid: null };
     }
     setPortStatus(newStatus);
-
-    // Tiny delay for visual feedback
-    setTimeout(() => setRefreshing(false), 500);
   };
 
-  const handleAddPort = (port) => {
-    const portNum = parseInt(port);
-    if (!monitoredPorts.includes(portNum)) {
-      setMonitoredPorts([...monitoredPorts, portNum]);
+  const handleAddProject = (projectData) => {
+    const newProject = {
+      ...projectData,
+      id: Date.now().toString(36) + Math.random().toString(36).substr(2)
+    };
+    setProjects([...projects, newProject]);
+  };
+
+  const handleDeleteProject = (id) => {
+    // Stop tunnel if running
+    if (activeTunnels[id]) {
+      handleStopTunnel(id);
     }
+    setProjects(projects.filter(p => p.id !== id));
   };
 
-  const handleRemovePort = (port) => {
-    setMonitoredPorts(monitoredPorts.filter(p => p !== port));
-  };
-
-  const handleKill = async (pid) => {
-    if (!window.electronAPI) return;
-    // Removed confirm dialog for faster flow, but could add back if requested
-    try {
-      await window.electronAPI.killProcess(pid);
-      checkAllPorts();
-    } catch (err) {
-      console.error(err);
+  const handleStartTunnel = async (project) => {
+    if (!authenticated) {
+      alert('Please login to Cloudflare first (Click the fingerprint icon on the top right).');
+      return;
     }
-  };
 
-  const handleStartTunnel = async (port) => {
-    if (!window.electronAPI) return;
     setLoading(true);
     try {
-      const url = await window.electronAPI.startTunnel(port);
-      setTunnels(prev => ({ ...prev, [port]: url }));
+      // If domain is not provided, we might still want to support Quick Tunnel logic or force a random subdomain on their zone?
+      // For MVP V2, let's assume if domain is empty, we throw error or use old logic?
+      // User explicitly asked for "Select Project" and "Config Domain".
+      // Let's enforce domain for named tunnel, or warn.
+
+      // Actually, if domain is empty, we could fall back to Quick Tunnel logic from V1?
+      // But main.js logic for 'cf-start-tunnel' is built for named tunnels.
+
+      let finalDomain = project.domain;
+      if (!finalDomain) {
+        // For now, let's just make it required in UI or alert
+        // Or let cloudflared handle it (it won't route DNS without domain)
+        if (!confirm('No custom domain specified. This will create a tunnel but not route it anywhere public yet. Continue?')) {
+          setLoading(false);
+          return;
+        }
+      }
+
+      await window.electronAPI.cfStartTunnel({
+        projectId: project.id,
+        name: project.name,
+        port: project.port,
+        domain: finalDomain
+      });
+
+      setActiveTunnels(prev => ({ ...prev, [project.id]: true }));
     } catch (err) {
-      alert('Failed to start tunnel: ' + err);
+      alert('Tunnel Error: ' + err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleStopTunnel = async (port) => {
-    if (!window.electronAPI) return;
+  const handleStopTunnel = async (id) => {
     try {
-      await window.electronAPI.stopTunnel();
-      setTunnels(prev => {
+      await window.electronAPI.cfStopTunnel(id);
+      setActiveTunnels(prev => {
         const next = { ...prev };
-        delete next[port];
+        delete next[id];
         return next;
       });
     } catch (err) {
@@ -105,76 +116,86 @@ function App() {
     }
   };
 
+  const handleLogin = async () => {
+    setLoading(true);
+    try {
+      await window.electronAPI.cfLogin();
+      // Poll for auth success or just wait a bit and recheck
+      setTimeout(async () => {
+        const isAuth = await window.electronAPI.cfCheckAuth();
+        if (isAuth) {
+          setAuthenticated(true);
+          alert('Successfully logged in to Cloudflare!');
+        } else {
+          alert('Login check failed. Please try completing the browser flow.');
+        }
+        setLoading(false);
+      }, 5000); // 5 sec delay to allow browser interaction
+    } catch (err) {
+      alert('Login failed: ' + err);
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen font-sans selection:bg-blue-500/30 text-zinc-100 flex flex-col">
-      {/* Title Bar dragging area */}
-      <div className="h-10 w-full draggable fixed top-0 left-0 z-50 flex items-center justify-center pointer-events-none">
-        <span className="text-xs font-medium text-zinc-600 tracking-widest uppercase opacity-0 hover:opacity-100 transition-opacity pointer-events-auto">Port Manager</span>
-      </div>
+      <div className="h-10 w-full draggable fixed top-0 left-0 z-50"></div>
 
       <div className="flex-1 p-8 pt-16 max-w-6xl mx-auto w-full">
         <header className="flex justify-between items-end mb-12">
           <div>
-            <h1 className="text-4xl font-extralight tracking-tight text-white mb-2">
-              Dashboard
-            </h1>
-            <p className="text-zinc-500 font-light flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full ${refreshing ? 'bg-blue-500 animate-pulse' : 'bg-zinc-700'}`}></span>
-              {refreshing ? 'Updating...' : 'All systems operational'}
-            </p>
+            <h1 className="text-4xl font-extralight tracking-tight text-white mb-2">Projects</h1>
+            <p className="text-zinc-500 font-light">Manage local services and secure tunnels</p>
           </div>
 
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="group flex items-center gap-3 px-5 py-2.5 bg-zinc-800/50 hover:bg-zinc-800 text-zinc-300 hover:text-white rounded-full transition-all border border-white/5 hover:border-white/10 active:scale-95"
-          >
-            <span className="text-sm font-medium">Add Port</span>
-            <kbd className="hidden group-hover:inline-block px-1.5 py-0.5 text-[10px] font-mono bg-black/20 rounded text-zinc-500">⌘K</kbd>
-            <span className="bg-white/10 p-1 rounded-full group-hover:bg-blue-500 group-hover:text-white transition-colors">
-              <Plus size={14} />
-            </span>
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={handleLogin}
+              title={authenticated ? "Logged in to Cloudflare" : "Login to Cloudflare"}
+              className={`p-2.5 rounded-full transition-all border ${authenticated
+                  ? 'bg-blue-500/10 border-blue-500/50 text-blue-400'
+                  : 'bg-zinc-800 border-white/5 text-zinc-600 hover:text-white'
+                }`}
+            >
+              <Fingerprint size={20} />
+            </button>
+
+            <button
+              onClick={() => setIsModalOpen(true)}
+              className="flex items-center gap-2 px-5 py-2.5 bg-zinc-100 hover:bg-white text-zinc-900 rounded-full transition-all shadow-lg shadow-white/5 font-medium active:scale-95"
+            >
+              <Plus size={18} />
+              <span>New Project</span>
+            </button>
+          </div>
         </header>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
-          {monitoredPorts.map(port => (
-            <PortCard
-              key={port}
-              port={port}
-              status={portStatus[port]?.status || 'free'}
-              pid={portStatus[port]?.pid}
-              tunnelUrl={tunnels[port]}
-              onDelete={handleRemovePort}
-              onKill={handleKill}
-              onTunnel={handleStartTunnel}
-              onStopTunnel={() => handleStopTunnel(port)}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {projects.map(project => (
+            <ProjectCard
+              key={project.id}
+              project={project}
+              status={portStatus[project.port]?.status || 'free'}
+              pid={portStatus[project.port]?.pid}
+              tunnelActive={activeTunnels[project.id]}
+              onDelete={handleDeleteProject}
+              onKill={(pid) => window.electronAPI.killProcess(pid).then(checkAllPorts)}
+              onStartTunnel={handleStartTunnel}
+              onStopTunnel={handleStopTunnel}
             />
           ))}
-
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="group min-h-[200px] rounded-2xl border-2 border-dashed border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800/20 flex flex-col items-center justify-center gap-4 transition-all text-zinc-600 hover:text-zinc-400"
-          >
-            <div className="p-3 rounded-full bg-zinc-900 group-hover:scale-110 transition-transform">
-              <Plus size={24} />
-            </div>
-            <span className="text-sm font-medium">Monitor New Port</span>
-          </button>
         </div>
       </div>
 
-      <AddPortModal
+      <AddProjectModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        onAdd={handleAddPort}
+        onAdd={handleAddProject}
       />
 
       {loading && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in">
-          <div className="bg-zinc-900 p-6 rounded-2xl shadow-2xl flex flex-col items-center gap-4 border border-white/10">
-            <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent"></div>
-            <span className="text-sm text-zinc-400 font-medium">Starting Cloudflare Tunnel...</span>
-          </div>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent"></div>
         </div>
       )}
     </div>
