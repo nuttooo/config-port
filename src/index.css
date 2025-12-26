@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --accent: #0A84FF;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  place-items: flex-start;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: var(--bg-primary);
+  color: #ffffff;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer utilities {
+  .draggable {
+    -webkit-app-region: drag;
+  }
+
+  .non-draggable {
+    -webkit-app-region: no-drag;
+  }
+
+  .glass-panel {
+    @apply bg-zinc-800/40 backdrop-blur-md border border-white/5 shadow-xl;
+  }
+}
