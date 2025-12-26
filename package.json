@@ -10,7 +10,25 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron": "wait-on tcp:5173 && electron .",
-    "electron:dev": "concurrently -k \"cross-env AB_ENV=dev npm run dev\" \"cross-env AB_ENV=dev npm run electron\""
+    "electron:dev": "concurrently -k \"cross-env AB_ENV=dev npm run dev\" \"cross-env AB_ENV=dev npm run electron\"",
+    "dist": "npm run build && electron-builder build --mac"
+  },
+  "description": "Port Manager Utility",
+  "author": "Kamowwat",
+  "build": {
+    "appId": "com.kamowwat.portmanager",
+    "productName": "Port Manager",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    }
   },
   "dependencies": {
     "lucide-react": "^0.562.0",
