@@ -2,31 +2,59 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Fingerprint, RefreshCw } from 'lucide-react';
 import ProjectCard from './components/ProjectCard';
 import AddProjectModal from './components/AddProjectModal';
+import LogViewer from './components/LogViewer';
 
 function App() {
   const [projects, setProjects] = useState(() => {
     const saved = localStorage.getItem('pm_projects');
     return saved ? JSON.parse(saved) : [
-      { id: 'default-1', name: 'React App', port: 5173, domain: null },
-      { id: 'default-2', name: 'API Server', port: 8080, domain: null }
+      { id: 'default-1', name: 'React App', port: 5173, domain: null, autoStart: false },
+      { id: 'default-2', name: 'API Server', port: 8080, domain: null, autoStart: false }
     ];
   });
 
   const [portStatus, setPortStatus] = useState({});
   const [activeTunnels, setActiveTunnels] = useState({}); // { projectId: true }
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingProject, setEditingProject] = useState(null); // Project object handling
   const [authenticated, setAuthenticated] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Logs state: { projectId: [ { timestamp, message } ] }
+  const [logs, setLogs] = useState({});
+  const [logViewerProject, setLogViewerProject] = useState(null); // projectId or null
 
   useEffect(() => {
     localStorage.setItem('pm_projects', JSON.stringify(projects));
     checkAllPorts();
 
-    // Check auth on load
     if (window.electronAPI) {
       window.electronAPI.cfCheckAuth().then(setAuthenticated);
+
+      // Listen for logs
+      if (window.electronAPI.onTunnelLog) {
+        window.electronAPI.onTunnelLog((data) => {
+          setLogs(prev => {
+            const projectLogs = prev[data.projectId] || [];
+            const newLogs = [...projectLogs, data].slice(-1000);
+            return { ...prev, [data.projectId]: newLogs };
+          });
+        });
+      }
     }
   }, [projects]);
+
+  // Auto-start Tunnels
+  useEffect(() => {
+    if (authenticated) {
+      projects.forEach(p => {
+        if (p.autoStart && !activeTunnels[p.id]) {
+          console.log('Auto-starting tunnel for', p.name);
+          handleStartTunnel(p);
+        }
+      });
+    }
+  }, [authenticated]);
 
   useEffect(() => {
     const interval = setInterval(checkAllPorts, 5000);
@@ -49,17 +77,54 @@ function App() {
   const handleAddProject = (projectData) => {
     const newProject = {
       ...projectData,
-      id: Date.now().toString(36) + Math.random().toString(36).substr(2)
+      id: Date.now().toString(36) + Math.random().toString(36).substr(2),
+      autoStart: false
     };
     setProjects([...projects, newProject]);
   };
 
-  const handleDeleteProject = (id) => {
-    // Stop tunnel if running
-    if (activeTunnels[id]) {
-      handleStopTunnel(id);
+  const handleEditProject = (id, updatedData) => {
+    // Logic: If domain changed and tunnel is active, we should ideally restart.
+    // But for simplicity, we just update data. User has to stop/start manually or we warn?
+    // Let's just update.
+    setProjects(projects.map(p => p.id === id ? { ...p, ...updatedData } : p));
+    setEditingProject(null);
+  };
+
+  const handleToggleAutoStart = (id) => {
+    setProjects(projects.map(p =>
+      p.id === id ? { ...p, autoStart: !p.autoStart } : p
+    ));
+  };
+
+  const handleDeleteProject = async (id) => {
+    const project = projects.find(p => p.id === id);
+    if (!project) return;
+
+    if (confirm(`Delete project "${project.name}"? This will remove the tunnel and DNS records.`)) {
+      if (activeTunnels[id]) {
+        handleStopTunnel(id);
+      }
+
+      if (window.electronAPI) {
+        try {
+          await window.electronAPI.cfDeleteTunnel({
+            projectId: id,
+            domain: project.domain
+          });
+        } catch (err) {
+          console.error('Failed to cleanup tunnel:', err);
+          alert('Project deleted, but cleanup may have failed: ' + err);
+        }
+      }
+
+      setProjects(projects.filter(p => p.id !== id));
+      setLogs(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
-    setProjects(projects.filter(p => p.id !== id));
   };
 
   const handleStartTunnel = async (project) => {
@@ -68,22 +133,12 @@ function App() {
       return;
     }
 
-    setLoading(true);
+    setLogs(prev => ({ ...prev, [project.id]: [] }));
+
     try {
-      // If domain is not provided, we might still want to support Quick Tunnel logic or force a random subdomain on their zone?
-      // For MVP V2, let's assume if domain is empty, we throw error or use old logic?
-      // User explicitly asked for "Select Project" and "Config Domain".
-      // Let's enforce domain for named tunnel, or warn.
-
-      // Actually, if domain is empty, we could fall back to Quick Tunnel logic from V1?
-      // But main.js logic for 'cf-start-tunnel' is built for named tunnels.
-
       let finalDomain = project.domain;
       if (!finalDomain) {
-        // For now, let's just make it required in UI or alert
-        // Or let cloudflared handle it (it won't route DNS without domain)
-        if (!confirm('No custom domain specified. This will create a tunnel but not route it anywhere public yet. Continue?')) {
-          setLoading(false);
+        if (!confirm('No custom domain specified. Continue with local tunnel?')) {
           return;
         }
       }
@@ -97,9 +152,8 @@ function App() {
 
       setActiveTunnels(prev => ({ ...prev, [project.id]: true }));
     } catch (err) {
-      alert('Tunnel Error: ' + err.message);
-    } finally {
-      setLoading(false);
+      console.error(err);
+      alert(`Tunnel Error (${project.name}): ` + err.message);
     }
   };
 
@@ -120,7 +174,6 @@ function App() {
     setLoading(true);
     try {
       await window.electronAPI.cfLogin();
-      // Poll for auth success or just wait a bit and recheck
       setTimeout(async () => {
         const isAuth = await window.electronAPI.cfCheckAuth();
         if (isAuth) {
@@ -130,12 +183,15 @@ function App() {
           alert('Login check failed. Please try completing the browser flow.');
         }
         setLoading(false);
-      }, 5000); // 5 sec delay to allow browser interaction
+      }, 5000);
     } catch (err) {
       alert('Login failed: ' + err);
       setLoading(false);
     }
   };
+
+  const currentProjectLogs = logViewerProject ? logs[logViewerProject] : [];
+  const logViewerTitle = logViewerProject ? projects.find(p => p.id === logViewerProject)?.name : '';
 
   return (
     <div className="min-h-screen font-sans selection:bg-blue-500/30 text-zinc-100 flex flex-col">
@@ -182,6 +238,12 @@ function App() {
               onKill={(pid) => window.electronAPI.killProcess(pid).then(checkAllPorts)}
               onStartTunnel={handleStartTunnel}
               onStopTunnel={handleStopTunnel}
+              onViewLogs={() => setLogViewerProject(project.id)}
+              onToggleAutoStart={() => handleToggleAutoStart(project.id)}
+              onEdit={(p) => {
+                setEditingProject(p);
+                setIsModalOpen(true);
+              }}
             />
           ))}
         </div>
@@ -189,12 +251,24 @@ function App() {
 
       <AddProjectModal
         isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
+        onClose={() => {
+          setIsModalOpen(false);
+          setTimeout(() => setEditingProject(null), 300); // Clear after potential anim
+        }}
         onAdd={handleAddProject}
+        onEdit={handleEditProject}
+        initialData={editingProject}
+      />
+
+      <LogViewer
+        isOpen={!!logViewerProject}
+        onClose={() => setLogViewerProject(null)}
+        projectName={logViewerTitle}
+        logs={currentProjectLogs}
       />
 
       {loading && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent"></div>
         </div>
       )}

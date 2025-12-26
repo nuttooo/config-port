@@ -1,24 +1,39 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, ArrowRight, Globe } from 'lucide-react';
 
-const AddProjectModal = ({ isOpen, onClose, onAdd }) => {
+const AddProjectModal = ({ isOpen, onClose, onAdd, onEdit, initialData = null }) => {
     const [name, setName] = useState('');
     const [port, setPort] = useState('');
     const [domain, setDomain] = useState('');
+
+    useEffect(() => {
+        if (isOpen && initialData) {
+            setName(initialData.name);
+            setPort(initialData.port);
+            setDomain(initialData.domain || '');
+        } else if (isOpen) {
+            setName('');
+            setPort('');
+            setDomain('');
+        }
+    }, [isOpen, initialData]);
 
     if (!isOpen) return null;
 
     const handleSubmit = (e) => {
         e.preventDefault();
         if (port && name) {
-            onAdd({
+            const projectData = {
                 name,
                 port: parseInt(port),
                 domain: domain || null
-            });
-            setName('');
-            setPort('');
-            setDomain('');
+            };
+
+            if (initialData) {
+                onEdit(initialData.id, projectData);
+            } else {
+                onAdd(projectData);
+            }
             onClose();
         }
     };
@@ -33,7 +48,9 @@ const AddProjectModal = ({ isOpen, onClose, onAdd }) => {
             onClick={handleBackdropClick}
         >
             <div className="bg-[#1e1e1e] border border-white/10 rounded-2xl p-6 w-[400px] shadow-2xl animate-scale-in">
-                <h2 className="text-xl font-light text-white mb-6">New Project</h2>
+                <h2 className="text-xl font-light text-white mb-6">
+                    {initialData ? 'Edit Project' : 'New Project'}
+                </h2>
 
                 <form onSubmit={handleSubmit} className="flex flex-col gap-4">
                     <div>
@@ -81,7 +98,7 @@ const AddProjectModal = ({ isOpen, onClose, onAdd }) => {
                             disabled={!port || !name}
                             className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                         >
-                            <span>Create Project</span>
+                            <span>{initialData ? 'Save Changes' : 'Create Project'}</span>
                             <ArrowRight size={16} />
                         </button>
                     </div>

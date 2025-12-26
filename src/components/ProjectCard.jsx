@@ -1,7 +1,11 @@
 import React from 'react';
-import { Trash2, Globe, Power, Link2, Copy, Check, Activity, Terminal } from 'lucide-react';
+import { Trash2, Globe, Power, Link2, Copy, Check, Activity, Terminal, RotateCw, FileText, Settings } from 'lucide-react';
 
-const ProjectCard = ({ project, status, pid, tunnelActive, onDelete, onKill, onStartTunnel, onStopTunnel }) => {
+const ProjectCard = ({
+    project, status, pid, tunnelActive,
+    onDelete, onKill, onStartTunnel, onStopTunnel,
+    onViewLogs, onToggleAutoStart, onEdit
+}) => {
     const [copied, setCopied] = React.useState(false);
 
     const handleCopy = () => {
@@ -12,27 +16,44 @@ const ProjectCard = ({ project, status, pid, tunnelActive, onDelete, onKill, onS
     };
 
     return (
-        <div className="group relative glass-panel rounded-2xl p-5 transition-all duration-300 hover:bg-zinc-800/60 hover:shadow-2xl">
+        <div className="group relative glass-panel rounded-2xl p-5 transition-all duration-300 hover:bg-zinc-800/60 hover:shadow-2xl flex flex-col h-full">
             {/* Header */}
             <div className="flex justify-between items-start mb-6">
                 <div>
-                    <h3 className="text-xl font-medium text-white mb-1">{project.name}</h3>
+                    <h3 className="text-xl font-medium text-white mb-1 truncate max-w-[180px]" title={project.name}>{project.name}</h3>
                     <div className="flex items-center gap-2 text-zinc-500 text-sm font-mono">
                         <Terminal size={12} />
                         <span>:{project.port}</span>
                     </div>
                 </div>
 
-                <button
-                    onClick={() => onDelete(project.id)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity p-2 text-zinc-600 hover:text-red-400 rounded-lg hover:bg-white/5"
-                >
-                    <Trash2 size={16} />
-                </button>
+                <div className="flex gap-1">
+                    <button
+                        onClick={onViewLogs}
+                        title="View Logs"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-2 text-zinc-500 hover:text-white rounded-lg hover:bg-white/5"
+                    >
+                        <FileText size={16} />
+                    </button>
+                    <button
+                        onClick={() => onEdit && onEdit(project)}
+                        title="Edit Project"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-2 text-zinc-500 hover:text-white rounded-lg hover:bg-white/5"
+                    >
+                        <Settings size={16} />
+                    </button>
+                    <button
+                        onClick={() => onDelete(project.id)}
+                        title="Delete Project"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-2 text-zinc-600 hover:text-red-400 rounded-lg hover:bg-white/5"
+                    >
+                        <Trash2 size={16} />
+                    </button>
+                </div>
             </div>
 
-            {/* Status Section */}
-            <div className="space-y-4">
+            {/* Content (pushes footer down) */}
+            <div className="flex-1 space-y-4">
                 {/* Local Process Status */}
                 <div className="flex items-center justify-between p-3 rounded-xl bg-black/20 border border-white/5">
                     <div className="flex items-center gap-2">
@@ -64,8 +85,8 @@ const ProjectCard = ({ project, status, pid, tunnelActive, onDelete, onKill, onS
                             </div>
 
                             <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                                <span className="text-xs text-blue-200 truncate flex-1">
-                                    {project.domain ? `https://${project.domain}` : 'Scanning...'}
+                                <span className="text-xs text-blue-200 truncate flex-1 block">
+                                    {project.domain ? `https://${project.domain}` : 'Local Tunnel'}
                                 </span>
                                 <div className="flex items-center gap-1">
                                     {project.domain && (
@@ -95,6 +116,17 @@ const ProjectCard = ({ project, status, pid, tunnelActive, onDelete, onKill, onS
                         </button>
                     )}
                 </div>
+            </div>
+
+            {/* Footer: Auto Start Toggle */}
+            <div className="mt-4 pt-4 border-t border-white/5 flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity">
+                <span className="text-xs text-zinc-500 font-medium tracking-wide">AUTO START</span>
+                <button
+                    onClick={onToggleAutoStart}
+                    className={`w-8 h-4 rounded-full transition-colors relative ${project.autoStart ? 'bg-blue-500' : 'bg-zinc-700'}`}
+                >
+                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform ${project.autoStart ? 'translate-x-4' : 'translate-x-0'}`} />
+                </button>
             </div>
         </div>
     );

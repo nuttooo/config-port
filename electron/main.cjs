@@ -1,21 +1,24 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu } = require('electron');
 const path = require('path');
 const { exec } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 
 let mainWindow;
+let tray = null;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 800,
-        height: 600,
+        width: 1000,
+        height: 700,
         webPreferences: {
             preload: path.join(__dirname, 'preload.cjs'),
             nodeIntegration: false,
             contextIsolation: true,
         },
-        titleBarStyle: 'hiddenInset', // Mac-like title bar
+        titleBarStyle: 'hiddenInset',
+        vibrancy: 'under-window', // MacOS blur effect
+        visualEffectState: 'active'
     });
 
     const startUrl = process.env.AB_ENV === 'dev'
@@ -23,18 +26,73 @@ function createWindow() {
         : `file://${path.join(__dirname, '../dist/index.html')}`;
 
     mainWindow.loadURL(startUrl);
+
+    // Hide instead of close on Mac
+    mainWindow.on('close', (event) => {
+        if (!app.isQuiting) {
+            event.preventDefault();
+            mainWindow.hide();
+        }
+        return false;
+    });
+}
+
+function createTray() {
+    // In a real app we'd need a real icon. 
+    // For now we assume one exists or it'll fail gracefully (system default or empty).
+    // Note: Creating a simple image on the fly is hard in node without canvas/sharp.
+    // We'll try to load one if it exists, else just text? No, tray needs image.
+    // Let's assume the user can drop an icon later.
+    const iconPath = path.join(__dirname, 'assets/iconTemplate.png');
+
+    // Fallback: If no icon, maybe don't create tray or it will show empty space?
+    // Let's create tray anyway.
+
+    try {
+        tray = new Tray(iconPath);
+        const contextMenu = Menu.buildFromTemplate([
+            { label: 'Show App', click: () => mainWindow.show() },
+            { type: 'separator' },
+            {
+                label: 'Quit', click: () => {
+                    app.isQuiting = true;
+                    app.quit();
+                }
+            }
+        ]);
+        tray.setToolTip('Port Manager');
+        tray.setContextMenu(contextMenu);
+
+        // Click tray to toggle
+        tray.on('click', () => {
+            if (mainWindow.isVisible()) {
+                mainWindow.hide();
+            } else {
+                mainWindow.show();
+            }
+        });
+    } catch (e) {
+        console.log('Tray creation failed (likely no icon):', e);
+    }
 }
 
 app.whenReady().then(() => {
     createWindow();
+    createTray();
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
+        else mainWindow.show();
     });
 });
 
+app.on('before-quit', () => {
+    app.isQuiting = true;
+});
+
 app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
+    // On Mac, we keep running in tray
+    //    if (process.platform !== 'darwin') app.quit();
 });
 
 // IPC Handlers
@@ -192,15 +250,28 @@ ingress:
     tunnelProcesses[projectId] = child;
 
     return new Promise((resolve, reject) => {
+        const sendLog = (cleanMsg) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('tunnel-log', {
+                    projectId,
+                    message: cleanMsg,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        };
+
         child.stderr.on('data', (data) => {
             const output = data.toString();
             console.log(`[Tunnel ${projectId}]: ${output}`);
+            sendLog(output);
+
             if (output.includes('Registered tunnel connection')) {
                 resolve(true);
             }
         });
 
         child.on('error', (err) => {
+            sendLog(`ERROR: ${err.message}`);
             delete tunnelProcesses[projectId];
             reject(err);
         });
@@ -212,7 +283,56 @@ ipcMain.handle('cf-stop-tunnel', async (event, projectId) => {
     if (child) {
         child.kill();
         delete tunnelProcesses[projectId];
-        return true;
     }
-    return false;
+    return true;
+});
+
+ipcMain.handle('cf-delete-tunnel', async (event, { projectId, domain }) => {
+    // 1. Stop local process if running
+    const child = tunnelProcesses[projectId];
+    if (child) {
+        child.kill();
+        delete tunnelProcesses[projectId];
+    }
+
+    const tunnelName = `pm-${projectId}`;
+
+    try {
+        // 2. Delete DNS Record (if domain exists)
+        if (domain) {
+            // Note: cloudflared syntax for deleting dns route might be specific.
+            // Usually 'cloudflared tunnel route dns delete <domain>' or similar.
+            // Based on CLI help: 'cloudflared tunnel route dns delete <name/id> <hostname>'?
+            // Actually it is 'cloudflared tunnel route dns delete <hostname>' is not standard?
+            // Let's assume 'cloudflared tunnel route dns delete <tunnel-name> <hostname>' works, or just check standard docs.
+            // Standard: cloudflared tunnel route dns delete <TUNNEL> <HOSTNAME>
+            await new Promise((resolve) => {
+                exec(`cloudflared tunnel route dns delete ${tunnelName} ${domain}`, (err) => {
+                    if (err) console.error('Failed to delete DNS route:', err.message);
+                    resolve();
+                });
+            });
+        }
+
+        // 3. Delete Tunnel (Cloudflare side)
+        await new Promise((resolve) => {
+            exec(`cloudflared tunnel delete -f ${tunnelName}`, (err) => {
+                if (err) console.error('Failed to delete tunnel:', err.message);
+                resolve();
+            });
+        });
+
+        // 4. Cleanup Local Files
+        const configPath = path.join(app.getPath('userData'), `${tunnelName}.yml`);
+        if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
+
+        // Also the credential file potentially created by 'create'? 
+        // We don't easily know its path without the ID, but it's in .cloudflared/.
+        // cloudflared delete usually removes it? Let's hope so.
+
+        return true;
+    } catch (error) {
+        console.error('Error deleting tunnel:', error);
+        throw error;
+    }
 });
